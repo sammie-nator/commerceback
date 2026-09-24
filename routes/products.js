@@ -2,7 +2,6 @@ const express = require("express");
 const router = express.Router();
 const Product = require("../models/Product");
 const upload = require("../middleware/upload");
-const { protectAdmin } = require("../middleware/auth");
 
 // GET /api/products?category=&search=&page=&limit=
 router.get("/", async (req, res) => {
@@ -45,10 +44,10 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ---- Admin-only ----
+// ---- Admin (no auth for now) ----
 
-// POST /api/products  (create, with up to 5 images)
-router.post("/", protectAdmin, upload.array("images", 5), async (req, res) => {
+// POST /api/products
+router.post("/", upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock } = req.body;
     const images = (req.files || []).map((f) => `/uploads/${f.filename}`);
@@ -67,7 +66,7 @@ router.post("/", protectAdmin, upload.array("images", 5), async (req, res) => {
 });
 
 // PUT /api/products/:id
-router.put("/:id", protectAdmin, upload.array("images", 5), async (req, res) => {
+router.put("/:id", upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock, isActive } = req.body;
     const update = { name, description, category, price, stock, isActive };
@@ -88,7 +87,7 @@ router.put("/:id", protectAdmin, upload.array("images", 5), async (req, res) => 
 });
 
 // DELETE /api/products/:id
-router.delete("/:id", protectAdmin, async (req, res) => {
+router.delete("/:id", async (req, res) => {
   try {
     const product = await Product.findByIdAndDelete(req.params.id);
     if (!product) return res.status(404).json({ message: "Product not found" });
