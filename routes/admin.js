@@ -4,10 +4,8 @@ const Order = require("../models/Order");
 const Product = require("../models/Product");
 const Admin = require("../models/Admin");
 
-// TEMP: no login — open admin for development
-// TODO: re-enable protectAdmin + sessions before production
+// TEMP: no auth
 
-// POST /api/admin/login — stub (frontend can still call this)
 router.post("/login", async (req, res) => {
   res.json({
     token: "dev-no-auth",
@@ -16,19 +14,16 @@ router.post("/login", async (req, res) => {
   });
 });
 
-// POST /api/admin/logout — stub
 router.post("/logout", async (req, res) => {
   res.json({ message: "Logged out" });
 });
 
-// GET /api/admin/me — always "logged in"
 router.get("/me", async (req, res) => {
   res.json({
     admin: { id: "dev", name: "Dev Admin", username: "admin", role: "owner" },
   });
 });
 
-// GET /api/admin/analytics
 router.get("/analytics", async (req, res) => {
   const [totalOrders, paidOrders, pendingOrders, totalProducts, lowStock] = await Promise.all([
     Order.countDocuments(),
@@ -83,13 +78,11 @@ router.get("/analytics", async (req, res) => {
   });
 });
 
-// GET /api/admin/users
 router.get("/users", async (req, res) => {
   const admins = await Admin.find().select("-pin").sort({ createdAt: -1 });
   res.json(admins);
 });
 
-// POST /api/admin/users
 router.post("/users", async (req, res) => {
   try {
     const { name, username, pin, role } = req.body;
@@ -105,15 +98,17 @@ router.post("/users", async (req, res) => {
       pin,
       role: role === "owner" ? "owner" : "staff",
     });
-    res
-      .status(201)
-      .json({ id: admin._id, name: admin.name, username: admin.username, role: admin.role });
+    res.status(201).json({
+      id: admin._id,
+      name: admin.name,
+      username: admin.username,
+      role: admin.role,
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 });
 
-// PUT /api/admin/users/:id/pin
 router.put("/users/:id/pin", async (req, res) => {
   try {
     const { pin } = req.body;
@@ -127,7 +122,6 @@ router.put("/users/:id/pin", async (req, res) => {
   }
 });
 
-// DELETE /api/admin/users/:id
 router.delete("/users/:id", async (req, res) => {
   await Admin.findByIdAndDelete(req.params.id);
   res.json({ message: "Admin removed" });
