@@ -44,9 +44,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ---- Admin (no auth for now) ----
+// ---- Admin (NO protectAdmin) ----
 
-// POST /api/products
 router.post("/", upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock } = req.body;
@@ -65,7 +64,6 @@ router.post("/", upload.array("images", 5), async (req, res) => {
   }
 });
 
-// PUT /api/products/:id
 router.put("/:id", upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock, isActive } = req.body;
@@ -86,7 +84,6 @@ router.put("/:id", upload.array("images", 5), async (req, res) => {
   }
 });
 
-// DELETE /api/products/:id
 router.delete("/:id", async (req, res) => {
   try {
     const product = await Product.findByIdAndDelete(req.params.id);
