@@ -1,7 +1,6 @@
 const express = require("express");
 const router = express.Router();
 const Location = require("../models/Location");
-const { protectAdmin } = require("../middleware/auth");
 
 // GET /api/locations - public, active only
 router.get("/", async (req, res) => {
@@ -9,8 +8,8 @@ router.get("/", async (req, res) => {
   res.json(locations);
 });
 
-// POST /api/locations - admin
-router.post("/", protectAdmin, async (req, res) => {
+// POST /api/locations
+router.post("/", async (req, res) => {
   try {
     const location = await Location.create({ name: req.body.name });
     res.status(201).json(location);
@@ -19,8 +18,8 @@ router.post("/", protectAdmin, async (req, res) => {
   }
 });
 
-// PUT /api/locations/:id - admin (toggle active / rename)
-router.put("/:id", protectAdmin, async (req, res) => {
+// PUT /api/locations/:id
+router.put("/:id", async (req, res) => {
   const location = await Location.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
   });
@@ -28,8 +27,8 @@ router.put("/:id", protectAdmin, async (req, res) => {
   res.json(location);
 });
 
-// DELETE /api/locations/:id - admin
-router.delete("/:id", protectAdmin, async (req, res) => {
+// DELETE /api/locations/:id
+router.delete("/:id", async (req, res) => {
   await Location.findByIdAndDelete(req.params.id);
   res.json({ message: "Deleted" });
 });
