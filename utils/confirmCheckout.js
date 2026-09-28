@@ -1,7 +1,6 @@
 const Checkout = require("../models/Checkout");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
-const { sendOrderEmail } = require("./mailer");
 
 const genTrackingCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
@@ -106,11 +105,6 @@ const handleStkCallback = async (callback) => {
   checkout.status = "confirmed";
   checkout.order = order._id;
   await checkout.save();
-
-  // Fire and forget: an email hiccup must never undo a confirmed order
-  sendOrderEmail(order).catch((err) =>
-    console.error(`Order email failed for ${order.trackingCode}:`, err.message)
-  );
 
   return { handled: true, confirmed: true, order };
 };
