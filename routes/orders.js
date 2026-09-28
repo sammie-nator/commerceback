@@ -78,12 +78,15 @@ router.post("/", async (req, res) => {
       await checkout.save();
       return res.status(502).json({
         message: "We couldn't send the M-Pesa prompt. Please check your number and try again.",
+        checkoutId: checkout.publicId,
+        status: "failed",
       });
     }
 
     res.status(201).json({
       checkoutId: checkout.publicId,
       message: "M-Pesa prompt sent. Enter your PIN on your phone to confirm.",
+      status: "pending",
     });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -91,34 +94,47 @@ router.post("/", async (req, res) => {
 });
 
 // GET /api/orders/checkout/:checkoutId - poll payment state / confirmation details
+// Frontend should poll this every 2–3s after checkout until status is confirmed or failed.
+//
+// Responses:
+//   { status: "pending" }
+//   { status: "confirmed", order: { trackingCode, receipt, ... } }
+//   { status: "failed", message: "..." }
 router.get("/checkout/:checkoutId", async (req, res) => {
-  const checkout = await Checkout.findOne({ publicId: req.params.checkoutId }).populate("order");
-  if (!checkout) return res.status(404).json({ message: "Checkout not found" });
+  try {
+    const checkout = await Checkout.findOne({ publicId: req.params.checkoutId }).populate("order");
+    if (!checkout) return res.status(404).json({ message: "Checkout not found" });
 
-  if (checkout.status === "confirmed" && checkout.order) {
-    const o = checkout.order;
-    return res.json({
-      status: "confirmed",
-      order: {
-        trackingCode: o.trackingCode,
-        customerName: o.customerName,
-        customerPhone: o.customerPhone,
-        totalAmount: o.totalAmount,
-        items: o.items,
-        pickupLocation: o.pickupLocation,
-        customLocation: o.customLocation,
-        receipt: o.payment?.mpesaReceiptNumber,
-        createdAt: o.createdAt,
-      },
-    });
+    if (checkout.status === "confirmed" && checkout.order) {
+      const o = checkout.order;
+      return res.json({
+        status: "confirmed",
+        order: {
+          trackingCode: o.trackingCode,
+          customerName: o.customerName,
+          customerPhone: o.customerPhone,
+          totalAmount: o.totalAmount,
+          items: o.items,
+          pickupLocation: o.pickupLocation,
+          customLocation: o.customLocation,
+          receipt: o.payment?.mpesaReceiptNumber,
+          createdAt: o.createdAt,
+        },
+      });
+    }
+
+    if (checkout.status === "failed") {
+      return res.json({
+        status: "failed",
+        message: checkout.failureReason || "Payment was not completed",
+      });
+    }
+
+    // "pending" and the internal "confirming" state both look like "waiting" to the client
+    res.json({ status: "pending" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-
-  if (checkout.status === "failed") {
-    return res.json({ status: "failed", message: checkout.failureReason });
-  }
-
-  // "pending" and the internal "confirming" state both look like "waiting" to the client
-  res.json({ status: "pending" });
 });
 
 // GET /api/orders/track?phone=&code=
