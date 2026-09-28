@@ -3,6 +3,16 @@ const router = express.Router();
 const Product = require("../models/Product");
 const upload = require("../middleware/upload");
 
+// Normalize uploaded file paths:
+// - Cloudinary → full secure_url
+// - Local disk → /uploads/filename
+const fileToUrl = (f) => {
+  if (f.path && f.path.startsWith("http")) return f.path; // Cloudinary
+  if (f.secure_url) return f.secure_url;
+  if (f.filename) return `/uploads/${f.filename}`;
+  return null;
+};
+
 // GET /api/products?category=&search=&page=&limit=
 router.get("/", async (req, res) => {
   try {
@@ -49,7 +59,7 @@ router.get("/:id", async (req, res) => {
 router.post("/", upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock } = req.body;
-    const images = (req.files || []).map((f) => `/uploads/${f.filename}`);
+    const images = (req.files || []).map(fileToUrl).filter(Boolean);
     const product = await Product.create({
       name,
       description,
@@ -69,7 +79,7 @@ router.put("/:id", upload.array("images", 5), async (req, res) => {
     const { name, description, category, price, stock, isActive } = req.body;
     const update = { name, description, category, price, stock, isActive };
     if (req.files && req.files.length) {
-      update.images = req.files.map((f) => `/uploads/${f.filename}`);
+      update.images = req.files.map(fileToUrl).filter(Boolean);
     }
     Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
 
