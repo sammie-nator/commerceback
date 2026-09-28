@@ -1,12 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const Order = require("../models/Order");
+const Checkout = require("../models/Checkout");
 const Product = require("../models/Product");
 const { stkPush } = require("../utils/mpesa");
 
-const genTrackingCode = () => String(Math.floor(1000 + Math.random() * 9000));
-
-// POST /api/orders  - create order + trigger STK push
+// POST /api/orders - start a checkout + trigger the STK push.
+// NOTE: no Order exists yet. It is created by the Daraja callback once the
+// payment is confirmed (see utils/confirmCheckout.js).
 router.post("/", async (req, res) => {
   try {
     const {
@@ -44,9 +45,7 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const trackingCode = genTrackingCode();
-
-    const order = await Order.create({
+    const checkout = await Checkout.create({
       guestId,
       items: orderItems,
       totalAmount,
@@ -54,30 +53,72 @@ router.post("/", async (req, res) => {
       customerPhone,
       pickupLocation,
       customLocation,
-      trackingCode,
-      status: "pending_payment",
-      payment: { status: "pending" },
     });
 
     try {
-      await stkPush({
+      const stk = await stkPush({
         phone: customerPhone,
         amount: totalAmount,
-        accountReference: String(order._id),
-        transactionDesc: `Order ${trackingCode}`,
+        accountReference: checkout.publicId, // trimmed to 12 chars in utils/mpesa.js
+        description: "Order payment",
       });
+
+      if (String(stk.ResponseCode) !== "0") {
+        throw new Error(stk.ResponseDescription || "STK push was not accepted");
+      }
+
+      // This is what lets the callback find the checkout later
+      checkout.checkoutRequestID = stk.CheckoutRequestID;
+      checkout.merchantRequestID = stk.MerchantRequestID;
+      await checkout.save();
     } catch (mpesaErr) {
       console.error("STK push failed:", mpesaErr.response?.data || mpesaErr.message);
+      checkout.status = "failed";
+      checkout.failureReason = "The M-Pesa prompt could not be sent";
+      await checkout.save();
       return res.status(502).json({
-        message: "Order created but payment prompt failed to send. Please retry payment.",
-        order,
+        message: "We couldn't send the M-Pesa prompt. Please check your number and try again.",
       });
     }
 
-    res.status(201).json({ order });
+    res.status(201).json({
+      checkoutId: checkout.publicId,
+      message: "M-Pesa prompt sent. Enter your PIN on your phone to confirm.",
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
+});
+
+// GET /api/orders/checkout/:checkoutId - poll payment state / confirmation details
+router.get("/checkout/:checkoutId", async (req, res) => {
+  const checkout = await Checkout.findOne({ publicId: req.params.checkoutId }).populate("order");
+  if (!checkout) return res.status(404).json({ message: "Checkout not found" });
+
+  if (checkout.status === "confirmed" && checkout.order) {
+    const o = checkout.order;
+    return res.json({
+      status: "confirmed",
+      order: {
+        trackingCode: o.trackingCode,
+        customerName: o.customerName,
+        customerPhone: o.customerPhone,
+        totalAmount: o.totalAmount,
+        items: o.items,
+        pickupLocation: o.pickupLocation,
+        customLocation: o.customLocation,
+        receipt: o.payment?.mpesaReceiptNumber,
+        createdAt: o.createdAt,
+      },
+    });
+  }
+
+  if (checkout.status === "failed") {
+    return res.json({ status: "failed", message: checkout.failureReason });
+  }
+
+  // "pending" and the internal "confirming" state both look like "waiting" to the client
+  res.json({ status: "pending" });
 });
 
 // GET /api/orders/track?phone=&code=
