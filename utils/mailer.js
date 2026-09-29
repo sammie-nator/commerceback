@@ -44,20 +44,6 @@ const sendOrderEmail = async (order) => {
     total: i.price * i.quantity,
   }));
 
-  const text = [
-    `New confirmed order — tracking code ${tracking}`,
-    "",
-    `Customer: ${order.customerName}`,
-    `Phone: ${order.customerPhone}`,
-    `Pickup: ${pickup}`,
-    `M-Pesa receipt (transaction code): ${receipt}`,
-    `Tracking code (PIN for order tracking): ${tracking}`,
-    "",
-    ...lines.map((l) => `${l.qty} x ${l.name} — ${money(l.total)}`),
-    "",
-    `Total paid: ${money(order.totalAmount)}`,
-  ].join("\n");
-
   const rows = lines
     .map(
       (l) =>
@@ -66,6 +52,8 @@ const sendOrderEmail = async (order) => {
     )
     .join("");
 
+  // Sequenzy rejects when both body and html are set and do not match.
+  // Send a single HTML body only.
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:520px">
       <h2 style="margin:0 0 4px">New confirmed order</h2>
@@ -112,7 +100,6 @@ const sendOrderEmail = async (order) => {
   const payload = {
     to,
     subject: `New order #${tracking} — ${money(order.totalAmount)}`,
-    body: text,
     html,
   };
 
