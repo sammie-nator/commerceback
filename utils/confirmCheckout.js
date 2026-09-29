@@ -1,6 +1,7 @@
 const Checkout = require("../models/Checkout");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
+const { sendOrderEmail } = require("./mailer");
 
 const genTrackingCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
@@ -21,46 +22,10 @@ const metaValue = (callback, name) =>
   callback.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value;
 
 /**
- * Handles Safaricom's STK callback.
- *
- * This is the ONLY place an Order is created, and only when Daraja reports a
- * successful payment for a pending Checkout.
+ * Shared path that turns a pending checkout into a paid Order.
+ * Used by both the Safaricom callback and the STK-query fallback on poll.
  */
-const handleStkCallback = async (callback) => {
-  const { CheckoutRequestID, ResultCode, ResultDesc } = callback;
-
-  // Claim the checkout atomically. Safaricom can deliver a callback twice, and
-  // only the first one may create an order.
-  const checkout = await Checkout.findOneAndUpdate(
-    { checkoutRequestID: CheckoutRequestID, status: "pending" },
-    { $set: { status: "confirming", rawCallback: callback } },
-    { new: true }
-  );
-  if (!checkout) return { handled: false };
-
-  // Payment failed / cancelled: no order is ever created
-  if (Number(ResultCode) !== 0) {
-    checkout.status = "failed";
-    checkout.failureReason = ResultDesc || "Payment was not completed";
-    await checkout.save();
-    return { handled: true, confirmed: false };
-  }
-
-  const receipt = metaValue(callback, "MpesaReceiptNumber");
-  const paidAmount = Number(metaValue(callback, "Amount"));
-
-  // Sanity check: what was paid must match what we asked for. A mismatch means
-  // this isn't a genuine callback, so release the claim and ignore it.
-  if (!receipt || paidAmount !== Math.round(checkout.totalAmount)) {
-    console.error(
-      `Callback ignored for checkout ${checkout.publicId}: receipt=${receipt}, ` +
-        `paid=${paidAmount}, expected=${Math.round(checkout.totalAmount)}`
-    );
-    checkout.status = "pending";
-    await checkout.save();
-    return { handled: false };
-  }
-
+const finalizePaidCheckout = async (checkout, { receipt, raw }) => {
   let order;
   try {
     order = await createOrderWithUniqueCode({
@@ -76,14 +41,12 @@ const handleStkCallback = async (callback) => {
         method: "mpesa",
         checkoutRequestID: checkout.checkoutRequestID,
         merchantRequestID: checkout.merchantRequestID,
-        mpesaReceiptNumber: receipt,
+        mpesaReceiptNumber: receipt || undefined,
         status: "success",
-        rawCallback: callback,
+        rawCallback: raw,
       },
     });
   } catch (err) {
-    // Money was received but the order couldn't be saved. The checkout stays in
-    // "confirming" with the raw callback stored, so nothing is lost silently.
     console.error(
       `PAID BUT ORDER NOT SAVED - receipt ${receipt}, phone ${checkout.customerPhone}, ` +
         `checkout ${checkout.publicId}: ${err.message}`
@@ -91,8 +54,6 @@ const handleStkCallback = async (callback) => {
     throw err;
   }
 
-  // Paid orders reduce stock here (the admin status route only does it on a
-  // non-paid -> paid change, which the callback path never triggers).
   try {
     for (const item of order.items) {
       await Product.updateOne({ _id: item.product }, { $inc: { stock: -item.quantity } });
@@ -104,9 +65,121 @@ const handleStkCallback = async (callback) => {
 
   checkout.status = "confirmed";
   checkout.order = order._id;
+  if (raw) checkout.rawCallback = raw;
   await checkout.save();
 
+  // Fire-and-forget: email must never undo a confirmed order
+  sendOrderEmail(order).catch((err) =>
+    console.error(
+      `Order email failed for ${order.trackingCode}:`,
+      err.response?.data || err.message
+    )
+  );
+
+  return order;
+};
+
+/**
+ * Handles Safaricom's STK callback.
+ * An Order is only created when Daraja reports a successful payment.
+ */
+const handleStkCallback = async (callback) => {
+  const { CheckoutRequestID, ResultCode, ResultDesc } = callback;
+
+  console.log(
+    `[mpesa callback] CheckoutRequestID=${CheckoutRequestID} ResultCode=${ResultCode} ResultDesc=${ResultDesc}`
+  );
+
+  // Claim the checkout atomically (prevents double-processing)
+  const checkout = await Checkout.findOneAndUpdate(
+    { checkoutRequestID: CheckoutRequestID, status: "pending" },
+    { $set: { status: "confirming", rawCallback: callback } },
+    { new: true }
+  );
+  if (!checkout) {
+    console.log(
+      `[mpesa callback] no pending checkout for ${CheckoutRequestID} (already handled or unknown)`
+    );
+    return { handled: false };
+  }
+
+  // Payment failed / cancelled
+  if (Number(ResultCode) !== 0) {
+    checkout.status = "failed";
+    checkout.failureReason = ResultDesc || "Payment was not completed";
+    await checkout.save();
+    console.log(`[mpesa callback] marked failed: ${checkout.publicId}`);
+    return { handled: true, confirmed: false };
+  }
+
+  const receipt = metaValue(callback, "MpesaReceiptNumber");
+  const paidAmount = Number(metaValue(callback, "Amount"));
+
+  // Amount sanity check (callback path only — query fallback may not have amount)
+  if (receipt && paidAmount && paidAmount !== Math.round(checkout.totalAmount)) {
+    console.error(
+      `Callback ignored for checkout ${checkout.publicId}: receipt=${receipt}, ` +
+        `paid=${paidAmount}, expected=${Math.round(checkout.totalAmount)}`
+    );
+    checkout.status = "pending";
+    await checkout.save();
+    return { handled: false };
+  }
+
+  const order = await finalizePaidCheckout(checkout, { receipt, raw: callback });
+  console.log(
+    `[mpesa callback] confirmed order ${order.trackingCode} for checkout ${checkout.publicId}`
+  );
   return { handled: true, confirmed: true, order };
 };
 
-module.exports = { handleStkCallback };
+/**
+ * Fallback used when the callback never arrives (common in local/dev or misconfigured URL).
+ * Call Daraja STK Query; if ResultCode is 0, create the order the same way the callback would.
+ */
+const confirmFromStkQuery = async (checkout, queryResult) => {
+  if (!checkout || checkout.status !== "pending") return null;
+
+  const resultCode = String(queryResult.ResultCode ?? "");
+  // "0" = success. Other codes mean still processing, cancelled, failed, etc.
+  if (resultCode !== "0") {
+    // Terminal failure codes from Daraja query (not exhaustive, but common ones)
+    const failedCodes = new Set(["1032", "1037", "1", "2001", "17"]);
+    if (failedCodes.has(resultCode)) {
+      const claimed = await Checkout.findOneAndUpdate(
+        { _id: checkout._id, status: "pending" },
+        {
+          $set: {
+            status: "failed",
+            failureReason: queryResult.ResultDesc || "Payment was not completed",
+            rawCallback: queryResult,
+          },
+        },
+        { new: true }
+      );
+      if (claimed) {
+        console.log(
+          `[stk query] marked failed ${checkout.publicId}: ${resultCode} ${queryResult.ResultDesc}`
+        );
+      }
+    }
+    return null;
+  }
+
+  // Success via query — claim and finalize
+  const claimed = await Checkout.findOneAndUpdate(
+    { _id: checkout._id, status: "pending" },
+    { $set: { status: "confirming", rawCallback: queryResult } },
+    { new: true }
+  );
+  if (!claimed) return null;
+
+  const receipt =
+    queryResult.MpesaReceiptNumber || queryResult.mpesaReceiptNumber || undefined;
+
+  const order = await finalizePaidCheckout(claimed, { receipt, raw: queryResult });
+  console.log(`[stk query] confirmed order ${order.trackingCode} for checkout ${claimed.publicId}`);
+  return order;
+};
+
+module.exports = { handleStkCallback, confirmFromStkQuery };
