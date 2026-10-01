@@ -11,7 +11,7 @@ const protectAdmin = async (req, res, next) => {
   try {
     const token = header.split(" ")[1];
     const session = await Session.findOne({ token }).populate("admin", "-pin");
-    if (!session || session.expiresAt < new Date()) {
+    if (!session || session.expiresAt < new Date() || !session.admin) {
       return res.status(401).json({ message: "Session expired, please log in again" });
     }
     req.admin = session.admin;
@@ -22,4 +22,12 @@ const protectAdmin = async (req, res, next) => {
   }
 };
 
-module.exports = { protectAdmin };
+// Use AFTER protectAdmin:  router.delete("/:id", protectAdmin, requireRole("owner"), ...)
+const requireRole = (...roles) => (req, res, next) => {
+  if (!req.admin || !roles.includes(req.admin.role)) {
+    return res.status(403).json({ message: "You don't have permission to do that" });
+  }
+  next();
+};
+
+module.exports = { protectAdmin, requireRole };
