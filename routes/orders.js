@@ -4,6 +4,7 @@ const Order = require("../models/Order");
 const Checkout = require("../models/Checkout");
 const Product = require("../models/Product");
 const { stkPush } = require("../utils/mpesa");
+const { protectAdmin } = require("../middleware/auth");
 
 // POST /api/orders - start a checkout + trigger the STK push.
 // NOTE: no Order exists yet. It is created by the Daraja callback once the
@@ -161,10 +162,10 @@ router.get("/:id/status", async (req, res) => {
   });
 });
 
-// ---- Admin (no auth for now) ----
+// ---- Admin: any logged-in staff or owner ----
 
 // GET /api/orders
-router.get("/", async (req, res) => {
+router.get("/", protectAdmin, async (req, res) => {
   const { status, page = 1, limit = 20 } = req.query;
   const filter = {};
   if (status) filter.status = status;
@@ -177,7 +178,7 @@ router.get("/", async (req, res) => {
 });
 
 // PUT /api/orders/:id/status
-router.put("/:id/status", async (req, res) => {
+router.put("/:id/status", protectAdmin, async (req, res) => {
   const { status } = req.body;
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ message: "Order not found" });
