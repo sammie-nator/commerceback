@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Product = require("../models/Product");
 const upload = require("../middleware/upload");
+const { protectAdmin, requireRole } = require("../middleware/auth");
 
 // Normalize uploaded file paths:
 // - Cloudinary → full secure_url
@@ -54,9 +55,9 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ---- Admin (NO protectAdmin) ----
+// ---- Admin: staff + owner can create/edit, only owner can delete ----
 
-router.post("/", upload.array("images", 5), async (req, res) => {
+router.post("/", protectAdmin, upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock } = req.body;
     const images = (req.files || []).map(fileToUrl).filter(Boolean);
@@ -74,7 +75,7 @@ router.post("/", upload.array("images", 5), async (req, res) => {
   }
 });
 
-router.put("/:id", upload.array("images", 5), async (req, res) => {
+router.put("/:id", protectAdmin, upload.array("images", 5), async (req, res) => {
   try {
     const { name, description, category, price, stock, isActive } = req.body;
     const update = { name, description, category, price, stock, isActive };
@@ -94,7 +95,7 @@ router.put("/:id", upload.array("images", 5), async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", protectAdmin, requireRole("owner"), async (req, res) => {
   try {
     const product = await Product.findByIdAndDelete(req.params.id);
     if (!product) return res.status(404).json({ message: "Product not found" });
