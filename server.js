@@ -4,8 +4,46 @@ const cors = require("cors");
 const morgan = require("morgan");
 const path = require("path");
 const connectDB = require("./config/db");
+const Admin = require("./models/Admin");
 
-connectDB();
+const ensureOwnerFromEnv = async () => {
+  try {
+    const pin = process.env.ADMIN_PIN;
+    if (!pin || !/^\d{4}$/.test(pin)) {
+      console.warn(
+        "⚠️  ADMIN_PIN is missing or not exactly 4 digits. Skipping admin sync."
+      );
+      return;
+    }
+
+    const name = process.env.ADMIN_NAME || "Store Owner";
+    const username = (process.env.ADMIN_USERNAME || "admin").toLowerCase().trim();
+
+    // Find existing owner/admin by username, or create a new one
+    let admin = await Admin.findOne({ username });
+
+    if (admin) {
+      // Force update the PIN + name + clear any lock
+      admin.name = name;
+      admin.pin = pin;               // pre-save hook will hash it
+      admin.role = "owner";
+      admin.failedAttempts = 0;
+      admin.lockUntil = null;
+      await admin.save();
+      console.log(`✅ Owner admin updated from env → username: "${username}"`);
+    } else {
+      await Admin.create({ name, username, pin, role: "owner" });
+      console.log(`✅ Owner admin created from env → username: "${username}"`);
+    }
+  } catch (err) {
+    console.error("Failed to sync owner admin:", err.message);
+  }
+};
+
+(async () => {
+  await connectDB();
+  await ensureOwnerFromEnv();
+})();
 
 const app = express();
 
