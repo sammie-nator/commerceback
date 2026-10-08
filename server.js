@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const path = require("path");
+const bcrypt = require("bcryptjs");
 const connectDB = require("./config/db");
 const Admin = require("./models/Admin");
 
@@ -19,22 +20,24 @@ const ensureOwnerFromEnv = async () => {
     const name = process.env.ADMIN_NAME || "Store Owner";
     const username = (process.env.ADMIN_USERNAME || "admin").toLowerCase().trim();
 
-    // Find existing owner/admin by username, or create a new one
-    let admin = await Admin.findOne({ username });
+    // Hash the PIN ourselves so we don't rely on the pre-save hook
+    const hashedPin = await bcrypt.hash(pin, 10);
 
-    if (admin) {
-      // Force update the PIN + name + clear any lock
-      admin.name = name;
-      admin.pin = pin;               // pre-save hook will hash it
-      admin.role = "owner";
-      admin.failedAttempts = 0;
-      admin.lockUntil = null;
-      await admin.save();
-      console.log(`✅ Owner admin updated from env → username: "${username}"`);
-    } else {
-      await Admin.create({ name, username, pin, role: "owner" });
-      console.log(`✅ Owner admin created from env → username: "${username}"`);
-    }
+    // Upsert the owner
+    const admin = await Admin.findOneAndUpdate(
+      { username },
+      {
+        name,
+        username,
+        pin: hashedPin,
+        role: "owner",
+        failedAttempts: 0,
+        lockUntil: null,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`✅ Owner admin synced from env → username: "${admin.username}"`);
   } catch (err) {
     console.error("Failed to sync owner admin:", err.message);
   }
